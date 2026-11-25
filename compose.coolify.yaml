@@ -1,0 +1,15 @@
+services:
+  anisette:
+    image: "${ANISETTE_IMAGE:?Set the pinned GHCR image in Coolify}"
+    command: ["--backend", "macos"]
+    environment:
+      ANISETTE_MACOS_V3_ROUTING_FALLBACK: "${ANISETTE_MACOS_V3_ROUTING_FALLBACK:?Set the macOS V3 routing value in Coolify}"
+      ANISETTE_V3_ROUTING_DIAGNOSTICS: "${ANISETTE_V3_ROUTING_DIAGNOSTICS:-0}"
+    expose:
+      - "6969"
+    volumes:
+      - anisette-macos-data:/data
+    restart: unless-stopped
+
+volumes:
+  anisette-macos-data:

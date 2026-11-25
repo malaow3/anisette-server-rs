@@ -91,16 +91,19 @@ fn live_http_restart_v3_restore_and_extended_provisioning() {
     let binary = Arc::new(backend::Assets::Macos(
         adi_macos::Binary::open(std::path::Path::new(&path)).unwrap(),
     ));
-    run_live(&binary, |finish| {
-        (
-            json!({
-                "ptm": STANDARD.encode(&finish.ptm),
-                "tk": STANDARD.encode(&finish.tk),
-                "X-Apple-I-MD-RINFO": finish.routing.to_string(),
-            }),
-            finish.routing,
-        )
-    });
+    run_live(&binary, extended_v3_end);
+}
+
+fn extended_v3_end(finish: &FinishData) -> (Value, u64) {
+    assert_ne!(finish.routing, 0);
+    (
+        json!({
+            "ptm": STANDARD.encode(&finish.ptm),
+            "tk": STANDARD.encode(&finish.tk),
+            "X-Apple-I-MD-RINFO": finish.routing.to_string(),
+        }),
+        finish.routing,
+    )
 }
 
 fn standard_v3_end(finish: &FinishData, fallback_routing: u64) -> (Value, u64) {
@@ -132,6 +135,16 @@ fn live_windows_http_restart_and_standard_v3() {
         adi_windows::Binary::open(std::path::Path::new(&path)).unwrap(),
     ));
     run_live(&assets, |finish| standard_v3_end(finish, 84_215_040));
+}
+
+#[test]
+#[ignore = "requires ANISETTE_WINDOWS_BINARY, Apple network and permitted Unicorn JIT"]
+fn live_windows_v3_preserves_explicit_routing_across_restart() {
+    let path = std::env::var_os("ANISETTE_WINDOWS_BINARY").expect("set Windows binary explicitly");
+    let assets = Arc::new(backend::Assets::Windows(
+        adi_windows::Binary::open(std::path::Path::new(&path)).unwrap(),
+    ));
+    run_live(&assets, extended_v3_end);
 }
 
 fn run_live(binary: &Arc<backend::Assets>, build_end: impl FnOnce(&FinishData) -> (Value, u64)) {
@@ -247,7 +260,7 @@ fn run_live(binary: &Arc<backend::Assets>, build_end: impl FnOnce(&FinishData) -
     assert_eq!(end["result"], "ProvisioningSuccess");
     drop(ws);
     let request = json!({"identifier":STANDARD.encode(id),"adi_pb":end["adi_pb"]});
-    for _ in 0..2 {
+    let check_routing = |server: &Server| {
         let response: Value = client
             .post(format!("{}/v3/get_headers", server.url))
             .json(&request)
@@ -262,7 +275,11 @@ fn run_live(binary: &Arc<backend::Assets>, build_end: impl FnOnce(&FinishData) -
                 .and_then(|s| s.parse::<u64>().ok()),
             Some(expected_routing)
         );
-    }
+    };
+    check_routing(&server);
+    drop(server);
+    let server = Server::start(binary.clone(), &directory);
+    check_routing(&server);
     drop(server);
     assert!(store::Store::open(&directory, binary.name()).is_ok());
     println!(

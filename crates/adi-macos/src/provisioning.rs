@@ -5,7 +5,7 @@ use anisette::{
     provisioning::{Exchange, Result},
 };
 pub const CLIENT_INFO: &str =
-    "<MacBookPro16,2> <macOS;26.7.1;25G241> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
+    "<MacBookPro16,2> <Mac OS X;26.7.1;25G241> <com.apple.AuthKit/1 (com.apple.akd/1.0)>";
 pub const USER_AGENT: &str = "akd/1.0 CFNetwork/3860.100.1 Darwin/25.0.0";
 /// Boots and provisions a new macOS device through an Apple exchange.
 ///

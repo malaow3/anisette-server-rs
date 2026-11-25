@@ -332,7 +332,13 @@ impl V1Worker {
 pub fn headers(assets: &Assets, identifier: Identifier, bytes: &[u8]) -> Reply {
     let result = (|| -> provisioning::Result<Value> {
         let mut runtime = Device::restore(assets, identifier.bytes(), bytes)?;
-        let routing = resolve_routing(None, runtime.routing()?, assets.backend())?;
+        let routing = resolve_v3_routing(
+            "get_headers",
+            None,
+            runtime.routing()?,
+            assets.backend(),
+            None,
+        )?;
         let (mid, otp) = runtime.request_otp()?;
         Ok(serde_json::to_value(ServerMessage::Headers {
             otp: &STANDARD.encode(otp),
@@ -347,16 +353,61 @@ fn resolve_routing(
     client_routing: Option<u64>,
     native_routing: u64,
     backend: Backend,
+    macos_fallback: Option<u64>,
 ) -> Result<u64, &'static str> {
     let routing = match client_routing {
         Some(r) => r,
         None if native_routing != 0 => native_routing,
+        None if backend == Backend::Macos => macos_fallback.unwrap_or(0),
         None => backend.standard_v3_routing().unwrap_or(0),
     };
     if routing == 0 {
         return Err("this backend requires Apple routing extension");
     }
     Ok(routing)
+}
+
+fn resolve_v3_routing(
+    stage: &str,
+    client_routing: Option<u64>,
+    native_routing: u64,
+    backend: Backend,
+    macos_fallback: Option<u64>,
+) -> Result<u64, &'static str> {
+    let routing = resolve_routing(client_routing, native_routing, backend, macos_fallback)?;
+    if std::env::var("ANISETTE_V3_ROUTING_DIAGNOSTICS").as_deref() == Ok("1") {
+        let source = if client_routing.is_some() {
+            "client"
+        } else if native_routing != 0 {
+            "native"
+        } else {
+            "fallback"
+        };
+        eprintln!(
+            "[v3-routing] stage={stage} backend={} source={source} native={native_routing} routing={routing}",
+            backend.name()
+        );
+    }
+    Ok(routing)
+}
+
+const INVALID_MACOS_FALLBACK: &str =
+    "ANISETTE_MACOS_V3_ROUTING_FALLBACK must be a nonzero decimal u64";
+
+fn configured_macos_fallback() -> Result<Option<u64>, &'static str> {
+    match std::env::var("ANISETTE_MACOS_V3_ROUTING_FALLBACK") {
+        Ok(value) => parse_macos_fallback(&value).map(Some),
+        Err(std::env::VarError::NotPresent) => Ok(None),
+        Err(_) => Err(INVALID_MACOS_FALLBACK),
+    }
+}
+
+fn parse_macos_fallback(value: &str) -> Result<u64, &'static str> {
+    value
+        .parse::<u64>()
+        .ok()
+        .filter(|&routing| routing != 0 && value.bytes().all(|byte| byte.is_ascii_digit()))
+        .ok_or(INVALID_MACOS_FALLBACK)
 }
 
 #[derive(Debug)]
@@ -391,7 +442,14 @@ impl ProvisioningContext for Context {
         self.runtime.finish(session, ptm, tk)?;
         self.pending = None;
         // Native completion may populate routing; inspect it only after consuming the handle.
-        let routing = resolve_routing(routing, self.runtime.routing()?, self.runtime.backend())?;
+        let backend = self.runtime.backend();
+        let native_routing = self.runtime.routing()?;
+        let macos_fallback = match (backend, routing, native_routing) {
+            (Backend::Macos, None, 0) => configured_macos_fallback()?,
+            _ => None,
+        };
+        let routing =
+            resolve_v3_routing("finish", routing, native_routing, backend, macos_fallback)?;
         self.runtime.set_routing(routing)?;
         self.runtime.export_state(self.identifier)
     }
@@ -559,18 +617,40 @@ impl Device {
 #[cfg(test)]
 mod tests {
     use super::{
-        Assets, Backend, Context, Device, Identifier, Path, ProvisioningContext, provisioning,
-        resolve_routing, v1_state_dir,
+        Assets, Backend, Context, Device, Identifier, Path, ProvisioningContext,
+        parse_macos_fallback, provisioning, resolve_routing, v1_state_dir,
     };
 
     #[test]
     fn finish_routing_prefers_client_then_native_then_backend_fallback() {
-        assert_eq!(resolve_routing(Some(99), 42, Backend::Macos), Ok(99));
-        assert!(resolve_routing(Some(0), 42, Backend::Windows).is_err());
-        assert_eq!(resolve_routing(None, 42, Backend::Windows), Ok(42));
-        assert_eq!(resolve_routing(None, 0, Backend::Android), Ok(17_106_176));
-        assert_eq!(resolve_routing(None, 0, Backend::Windows), Ok(84_215_040));
-        assert!(resolve_routing(None, 0, Backend::Macos).is_err());
+        let fallback = Some(84_215_040);
+        assert_eq!(
+            resolve_routing(Some(99), 42, Backend::Macos, fallback),
+            Ok(99)
+        );
+        assert!(resolve_routing(Some(0), 42, Backend::Macos, fallback).is_err());
+        assert_eq!(resolve_routing(None, 42, Backend::Macos, fallback), Ok(42));
+        assert_eq!(
+            resolve_routing(None, 0, Backend::Android, fallback),
+            Ok(17_106_176)
+        );
+        assert_eq!(
+            resolve_routing(None, 0, Backend::Windows, Some(99)),
+            Ok(84_215_040)
+        );
+        assert_eq!(
+            resolve_routing(None, 0, Backend::Macos, fallback),
+            Ok(84_215_040)
+        );
+        assert!(resolve_routing(None, 0, Backend::Macos, None).is_err());
+    }
+
+    #[test]
+    fn macos_fallback_requires_nonzero_decimal_routing() {
+        assert_eq!(parse_macos_fallback("84215040"), Ok(84_215_040));
+        for invalid in ["", "0", "+1", "-1", "0x10", " 42", "18446744073709551616"] {
+            assert!(parse_macos_fallback(invalid).is_err());
+        }
     }
 
     #[test]

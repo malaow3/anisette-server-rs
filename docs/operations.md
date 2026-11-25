@@ -41,6 +41,10 @@ CLI arguments override environment variables. `--binary` overrides the binary pa
 
 Keep the published host port bound to `127.0.0.1` for local use. Public deployments should run behind a reverse proxy with TLS and access control.
 
+Set `ANISETTE_V3_ROUTING_DIAGNOSTICS=1` to log V3 routing decisions at provisioning finish and header generation. Logs include the backend, routing source (`client`, `native`, or `fallback`), and numeric values, but not OTPs, provisioning blobs, or identifiers. Disable this setting after debugging; it logs a line for each successful routing decision.
+
+For an experimental stock-client test with the macOS backend, set `ANISETTE_MACOS_V3_ROUTING_FALLBACK` to the nonzero decimal routing value observed from Apple for the deployment (for example, `84215040`). This applies only to fresh macOS V3 provisioning when the client omits routing and the native backend returns zero. It is disabled by default. Apple can return different values, so this is not a universal default. Re-provision the client after changing the setting; it does not rewrite existing identities.
+
 ## Device state and restart
 
 On startup (and on V1 requests if not yet provisioned), the server provisions an identity with Apple and atomically writes `identity.json` before serving V1 headers. Subsequent restarts restore the saved identity without contacting Apple; generating OTPs for a provisioned device requires no network access. Corrupted or mismatched state files fail startup rather than silently resetting the device identity.
